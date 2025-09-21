@@ -10,15 +10,13 @@ import { Badge } from "@/components/ui/badge"
 import { ScrollArea } from "@/components/ui/scroll-area"
 import { Textarea } from "@/components/ui/textarea"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
-import { 
-  Phone, 
-  PhoneCall, 
-  PhoneOff, 
-  Mic, 
-  MicOff, 
-  Volume2, 
-  VolumeX, 
-  Clock, 
+import {
+  Phone,
+  PhoneCall,
+  PhoneOff,
+  Mic,
+  MicOff,
+  Clock,
   User,
   MapPin,
   FileText,
@@ -26,15 +24,21 @@ import {
   Activity,
   Heart,
   Shield,
-  Zap,
-  Settings,
   UserCheck,
   Calendar,
-  Hash,
   Mail,
   Home,
-  Edit
+  Bot,
+  Loader2,
 } from "lucide-react"
+
+// == INTERFACES ==
+interface TranscriptMessage {
+  id: string
+  content: string
+  sender: "user" | "ai"
+  timestamp: Date
+}
 
 interface CallSession {
   id: string
@@ -60,7 +64,7 @@ interface UserDetails {
   bloodType: string
   insuranceNumber: string
   additionalNotes: string
-  lastUpdated: Date
+  lastUpdated: Date | null
 }
 
 interface ServiceReport {
@@ -74,301 +78,436 @@ interface ServiceReport {
   createdAt: Date
 }
 
-export default function LiveCallSystem() {
-  // Call State
+// Initial empty state for user details
+const initialUserDetails: UserDetails = {
+  name: "",
+  age: "",
+  phoneNumber: "",
+  email: "",
+  address: "",
+  emergencyContact: "",
+  medicalConditions: "",
+  allergies: "",
+  medications: "",
+  bloodType: "",
+  insuranceNumber: "",
+  additionalNotes: "",
+  lastUpdated: null,
+}
+
+export default function LiveCallAgentPage() {
+  // == STATE MANAGEMENT ==
+
+  // Call State from LiveCallSystem
   const [isCallActive, setIsCallActive] = useState(false)
-  const [callStatus, setCallStatus] = useState<"idle" | "connecting" | "active" | "ended">("idle")
+  const [callStatus, setCallStatus] = useState<"idle" | "connecting" | "active" | "ended" | "failed">("idle")
   const [currentCall, setCurrentCall] = useState<CallSession | null>(null)
   const [callHistory, setCallHistory] = useState<CallSession[]>([])
   const [callDuration, setCallDuration] = useState(0)
-  
-  // Audio State
-  const [isMuted, setIsMuted] = useState(false)
-  const [isRecording, setIsRecording] = useState(false)
-  const [audioLevel, setAudioLevel] = useState(0)
-  
-  // Phone Input
   const [phoneNumber, setPhoneNumber] = useState("")
   const [callType, setCallType] = useState<"emergency" | "support" | "consultation">("support")
-  
-  // User Details State - This gets populated during call via SDK
-  const [userDetails, setUserDetails] = useState<UserDetails>({
-    name: "",
-    age: "",
-    phoneNumber: "",
-    email: "",
-    address: "",
-    emergencyContact: "",
-    medicalConditions: "",
-    allergies: "",
-    medications: "",
-    bloodType: "",
-    insuranceNumber: "",
-    additionalNotes: "",
-    lastUpdated: new Date()
-  })
-  
-  // Service Reports
+
+  // WebSocket & Audio State from ChatPage
+  const [transcript, setTranscript] = useState<TranscriptMessage[]>([])
+  const [isConnected, setIsConnected] = useState(false)
+  const [isMuted, setIsMuted] = useState(false)
+  const [isAiThinking, setIsAiThinking] = useState(false)
+
+  // User Details & Reports State
+  const [userDetails, setUserDetails] = useState<UserDetails>(initialUserDetails)
   const [reports, setReports] = useState<ServiceReport[]>([])
   const [newReport, setNewReport] = useState({
     serviceType: "",
     priority: "medium" as const,
     description: "",
-    assignedTo: ""
+    assignedTo: "",
   })
-  
-  // Location
   const [userLocation, setUserLocation] = useState<string>("")
-  
-  // Refs for SDK integration
-  const callTimerRef = useRef<NodeJS.Timeout | null>(null)
-  const audioContextRef = useRef<AudioContext | null>(null)
-  const mediaStreamRef = useRef<MediaStream | null>(null)
 
-  // Simulate call timer
+  // == REFS ==
+  const callTimerRef = useRef<NodeJS.Timeout | null>(null)
+  const transcriptScrollAreaRef = useRef<HTMLDivElement>(null)
+
+  // Refs from ChatPage for WebSocket and Audio
+  const wsRef = useRef<WebSocket | null>(null)
+  const audioPlayerNodeRef = useRef<AudioWorkletNode | null>(null)
+  const audioPlayerContextRef = useRef<AudioContext | null>(null)
+  const audioRecorderNodeRef = useRef<AudioWorkletNode | null>(null)
+  const audioRecorderContextRef = useRef<AudioContext | null>(null)
+  const micStreamRef = useRef<MediaStream | null>(null)
+  const audioBufferRef = useRef<Uint8Array[]>([])
+  const bufferTimerRef = useRef<NodeJS.Timeout | null>(null)
+  const currentMessageIdRef = useRef<string | null>(null)
+
+  // == EFFECTS ==
+
+  // Call Timer Effect
   useEffect(() => {
     if (isCallActive && callStatus === "active") {
       callTimerRef.current = setInterval(() => {
-        setCallDuration(prev => prev + 1)
-        // Simulate receiving user details during call (replace with actual SDK integration)
-        simulateSDKDataReceival()
+        setCallDuration((prev) => prev + 1)
       }, 1000)
     } else {
-      if (callTimerRef.current) {
-        clearInterval(callTimerRef.current)
-        callTimerRef.current = null
-      }
+      if (callTimerRef.current) clearInterval(callTimerRef.current)
     }
-
     return () => {
-      if (callTimerRef.current) {
-        clearInterval(callTimerRef.current)
-      }
+      if (callTimerRef.current) clearInterval(callTimerRef.current)
     }
   }, [isCallActive, callStatus])
 
-  // Simulate SDK receiving user details during call
-  const simulateSDKDataReceival = () => {
-    // This simulates how your SDK would feed user details during the call
-    // Replace this with actual SDK integration
-    if (callDuration === 5) {
-      setUserDetails(prev => ({
-        ...prev,
-        name: "John Doe",
-        phoneNumber: phoneNumber,
-        lastUpdated: new Date()
-      }))
+  // Transcript Auto-scroll Effect
+  useEffect(() => {
+    if (transcriptScrollAreaRef.current) {
+      transcriptScrollAreaRef.current.scrollTop = transcriptScrollAreaRef.current.scrollHeight
     }
-    if (callDuration === 10) {
-      setUserDetails(prev => ({
-        ...prev,
-        age: "32",
-        lastUpdated: new Date()
-      }))
+  }, [transcript, isAiThinking])
+
+  // Component Cleanup Effect
+  useEffect(() => {
+    return () => {
+      stopVoiceConversation() // Ensure everything is cleaned up on unmount
     }
-    if (callDuration === 15) {
-      setUserDetails(prev => ({
-        ...prev,
-        address: "123 Main St, City, State",
-        lastUpdated: new Date()
-      }))
+  }, [])
+
+  // == AUDIO & WEBSOCKET CORE LOGIC (from ChatPage) ==
+
+  const base64ToArray = (base64: string) => {
+    const binaryString = window.atob(base64)
+    const len = binaryString.length
+    const bytes = new Uint8Array(len)
+    for (let i = 0; i < len; i++) {
+      bytes[i] = binaryString.charCodeAt(i)
     }
-    if (callDuration === 20) {
-      setUserDetails(prev => ({
-        ...prev,
-        medicalConditions: "Diabetes Type 2",
-        bloodType: "O+",
-        lastUpdated: new Date()
-      }))
+    return bytes.buffer
+  }
+
+  const arrayBufferToBase64 = (buffer: ArrayBuffer) => {
+    let binary = ""
+    const bytes = new Uint8Array(buffer)
+    for (let i = 0; i < bytes.byteLength; i++) {
+      binary += String.fromCharCode(bytes[i])
+    }
+    return window.btoa(binary)
+  }
+
+  const convertFloat32ToPCM = (inputData: Float32Array) => {
+    const pcm16 = new Int16Array(inputData.length)
+    for (let i = 0; i < inputData.length; i++) {
+      pcm16[i] = inputData[i] * 0x7fff
+    }
+    return pcm16.buffer
+  }
+
+  const startAudioPlayerWorklet = async () => {
+    const audioContext = new AudioContext({ sampleRate: 24000 })
+    await audioContext.audioWorklet.addModule("/pcm-player-processor.js")
+    const audioPlayerNode = new AudioWorkletNode(audioContext, "pcm-player-processor")
+    audioPlayerNode.connect(audioContext.destination)
+    return [audioPlayerNode, audioContext] as const
+  }
+
+  const startAudioRecorderWorklet = async (audioRecorderHandler: (pcmData: ArrayBuffer) => void) => {
+    const audioRecorderContext = new AudioContext({ sampleRate: 16000 })
+    await audioRecorderContext.audioWorklet.addModule("/pcm-recorder-processor.js")
+    const micStream = await navigator.mediaDevices.getUserMedia({ audio: { channelCount: 1 } })
+    const source = audioRecorderContext.createMediaStreamSource(micStream)
+    const audioRecorderNode = new AudioWorkletNode(audioRecorderContext, "pcm-recorder-processor")
+    source.connect(audioRecorderNode)
+    audioRecorderNode.port.onmessage = (event) => {
+      const pcmData = convertFloat32ToPCM(event.data)
+      audioRecorderHandler(pcmData)
+    }
+    return [audioRecorderNode, audioRecorderContext, micStream] as const
+  }
+
+  const audioRecorderHandler = (pcmData: ArrayBuffer) => {
+    audioBufferRef.current.push(new Uint8Array(pcmData))
+    if (!bufferTimerRef.current) {
+      bufferTimerRef.current = setInterval(sendBufferedAudio, 200)
     }
   }
 
-  // SDK Integration Function - Call this when SDK receives user data
-  const updateUserDetailsFromSDK = (field: keyof UserDetails, value: string) => {
-    setUserDetails(prev => ({
-      ...prev,
-      [field]: value,
-      lastUpdated: new Date()
-    }))
+  const sendBufferedAudio = () => {
+    if (audioBufferRef.current.length === 0) return
+    const totalLength = audioBufferRef.current.reduce((acc, chunk) => acc + chunk.length, 0)
+    const combinedBuffer = new Uint8Array(totalLength)
+    let offset = 0
+    for (const chunk of audioBufferRef.current) {
+      combinedBuffer.set(chunk, offset)
+      offset += chunk.length
+    }
+    if (wsRef.current?.readyState === WebSocket.OPEN) {
+      const message = { mime_type: "audio/pcm", data: arrayBufferToBase64(combinedBuffer.buffer) }
+      wsRef.current.send(JSON.stringify(message))
+    }
+    audioBufferRef.current = []
   }
 
-  // Format call duration
-  const formatDuration = (seconds: number) => {
-    const mins = Math.floor(seconds / 60)
-    const secs = seconds % 60
-    return `${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`
+  const connectWebSocket = () => {
+    return new Promise<void>((resolve, reject) => {
+      if (wsRef.current) wsRef.current.close()
+
+      const userId = Math.floor(Math.random() * 10000)
+      const ws = new WebSocket(`${process.env.NEXT_PUBLIC_API_URL?.replace(/^http/, "ws")}/ws/${userId}?is_audio=true`)
+      wsRef.current = ws
+
+      ws.onopen = () => {
+        setIsConnected(true)
+        setCallStatus("active")
+        console.log("Connected to AI Agent")
+        resolve()
+      }
+
+      ws.onmessage = (event) => {
+        const data = JSON.parse(event.data)
+
+        if (data.turn_complete) {
+          setIsAiThinking(false)
+          currentMessageIdRef.current = null
+          return
+        }
+
+        if (data.mime_type === "audio/pcm" && audioPlayerNodeRef.current && !isMuted) {
+          audioPlayerNodeRef.current.port.postMessage(base64ToArray(data.data))
+        }
+
+        if (data.mime_type === "text/plain") {
+          setIsAiThinking(true)
+          if (currentMessageIdRef.current === null) {
+            const newId = Math.random().toString(36).substring(7)
+            currentMessageIdRef.current = newId
+            const newMessage: TranscriptMessage = {
+              id: newId,
+              content: data.data,
+              sender: "ai",
+              timestamp: new Date(),
+            }
+            setTranscript((prev) => [...prev, newMessage])
+          } else {
+            setTranscript((prev) =>
+              prev.map((msg) =>
+                msg.id === currentMessageIdRef.current ? { ...msg, content: msg.content + data.data } : msg,
+              ),
+            )
+          }
+        }
+        
+        if (data.mime_type === "user_transcription") {
+          const newMessage: TranscriptMessage = {
+            id: Math.random().toString(36).substring(7),
+            content: data.data,
+            sender: "user",
+            timestamp: new Date()
+          }
+          setTranscript((prev) => [...prev, newMessage]);
+        }
+
+        if (data.mime_type === "application/json" && data.event === "update_user_details") {
+          updateUserDetailsFromSDK(data.payload)
+        }
+      }
+
+      ws.onclose = () => {
+        setIsConnected(false)
+        console.log("Disconnected from AI Agent")
+        if (callStatus === "active" || callStatus === "connecting") {
+          endCall(true) 
+        }
+      }
+
+      ws.onerror = (error) => {
+        console.error("WebSocket error:", error)
+        setIsConnected(false)
+        setCallStatus("failed")
+        reject(error)
+      }
+    })
   }
 
-  // Start Call Function
+  const startVoiceConversation = async () => {
+    const [playerNode, playerContext] = await startAudioPlayerWorklet()
+    audioPlayerNodeRef.current = playerNode
+    audioPlayerContextRef.current = playerContext
+
+    const [recorderNode, recorderContext, micStream] = await startAudioRecorderWorklet(audioRecorderHandler)
+    audioRecorderNodeRef.current = recorderNode
+    audioRecorderContextRef.current = recorderContext
+    micStreamRef.current = micStream
+
+    await connectWebSocket()
+  }
+
+  const stopVoiceConversation = () => {
+    if (bufferTimerRef.current) clearInterval(bufferTimerRef.current)
+    bufferTimerRef.current = null
+    if (audioBufferRef.current.length > 0) sendBufferedAudio()
+
+    micStreamRef.current?.getTracks().forEach((track) => track.stop())
+    audioPlayerContextRef.current?.close()
+    audioRecorderContextRef.current?.close()
+    wsRef.current?.close()
+
+    audioPlayerNodeRef.current = null
+    audioRecorderNodeRef.current = null
+    micStreamRef.current = null
+    wsRef.current = null
+  }
+
+  // == CALL MANAGEMENT LOGIC ==
+
   const startCall = async () => {
     if (!phoneNumber.trim()) {
       alert("Please enter a phone number")
       return
     }
-
     setCallStatus("connecting")
-    
-    // Clear previous user details
-    setUserDetails({
-      name: "",
-      age: "",
-      phoneNumber: "",
-      email: "",
-      address: "",
-      emergencyContact: "",
-      medicalConditions: "",
-      allergies: "",
-      medications: "",
-      bloodType: "",
-      insuranceNumber: "",
-      additionalNotes: "",
-      lastUpdated: new Date()
-    })
-    
-    // Simulate connection delay
-    setTimeout(() => {
+    setTranscript([])
+    setUserDetails({ ...initialUserDetails, phoneNumber })
+    setCallDuration(0)
+
+    try {
+      await startVoiceConversation()
       const newCall: CallSession = {
         id: Math.random().toString(36).substring(7),
         startTime: new Date(),
         phoneNumber,
         callType,
         status: "active",
-        location: userLocation || "Unknown"
+        location: userLocation || "Unknown",
       }
-      
       setCurrentCall(newCall)
       setIsCallActive(true)
-      setCallStatus("active")
-      setCallDuration(0)
-      setIsRecording(true)
-      
-      // Initialize audio context for SDK integration
-      initializeAudio()
-    }, 2000)
+    } catch (error) {
+      console.error("Failed to start call:", error)
+      setCallStatus("failed")
+      setTimeout(() => setCallStatus("idle"), 3000)
+    }
   }
 
-  // End Call Function
-  const endCall = () => {
+  const endCall = (unexpected = false) => {
+    stopVoiceConversation()
+
     if (currentCall) {
       const endedCall: CallSession = {
         ...currentCall,
         endTime: new Date(),
         duration: formatDuration(callDuration),
-        status: "ended"
+        status: unexpected ? "failed" : "ended",
       }
-      
-      setCallHistory(prev => [endedCall, ...prev])
+      setCallHistory((prev) => [endedCall, ...prev])
       setCurrentCall(null)
     }
-    
+
     setIsCallActive(false)
-    setCallStatus("ended")
-    setIsRecording(false)
-    setCallDuration(0)
-    
-    // Clean up audio
-    cleanupAudio()
-    
-    // Reset to idle after 2 seconds
-    setTimeout(() => {
-      setCallStatus("idle")
-    }, 2000)
-  }
-
-  // Initialize Audio (for SDK integration)
-  const initializeAudio = async () => {
-    try {
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
-      mediaStreamRef.current = stream
-      audioContextRef.current = new AudioContext()
-      
-      // Here you would integrate with your actual SDK
-      console.log("Audio initialized for SDK integration")
-    } catch (error) {
-      console.error("Failed to initialize audio:", error)
+    setCallStatus(unexpected ? "failed" : "ended")
+    if (unexpected) {
+        setTimeout(() => setCallStatus("idle"), 3000);
     }
   }
 
-  // Cleanup Audio
-  const cleanupAudio = () => {
-    if (mediaStreamRef.current) {
-      mediaStreamRef.current.getTracks().forEach(track => track.stop())
-      mediaStreamRef.current = null
-    }
-    
-    if (audioContextRef.current) {
-      audioContextRef.current.close()
-      audioContextRef.current = null
-    }
-  }
-
-  // Toggle Mute
   const toggleMute = () => {
-    setIsMuted(!isMuted)
-    // Here you would integrate with your SDK to mute/unmute
-    console.log("Mute toggled:", !isMuted)
-  }
-
-  // Get Location
-  const getCurrentLocation = () => {
-    if (navigator.geolocation) {
-      navigator.geolocation.getCurrentPosition(
-        (position) => {
-          const location = `${position.coords.latitude.toFixed(4)}, ${position.coords.longitude.toFixed(4)}`
-          setUserLocation(location)
-        },
-        (error) => {
-          console.error("Error getting location:", error)
-          setUserLocation("Location unavailable")
-        }
-      )
-    } else {
-      setUserLocation("Geolocation not supported")
+    if (audioPlayerContextRef.current && audioPlayerNodeRef.current) {
+        setIsMuted(prev => {
+            const nextMuted = !prev;
+            if (nextMuted) {
+                audioPlayerNodeRef.current?.disconnect();
+            } else {
+                audioPlayerNodeRef.current?.connect(audioPlayerContextRef.current!.destination);
+            }
+            return nextMuted;
+        });
     }
   }
 
-  // Create Service Report
-  const createReport = () => {
-    if (!newReport.serviceType || !newReport.description) {
-      alert("Please fill in all required fields")
+  // == HELPER & UTILITY FUNCTIONS ==
+
+  const formatDuration = (seconds: number) => {
+    const mins = Math.floor(seconds / 60)
+    const secs = seconds % 60
+    return `${mins.toString().padStart(2, "0")}:${secs.toString().padStart(2, "0")}`
+  }
+
+  const updateUserDetailsFromSDK = (details: Partial<UserDetails>) => {
+    setUserDetails((prev) => ({
+      ...prev,
+      ...details,
+      lastUpdated: new Date(),
+    }))
+  }
+
+  // MODIFIED: This function now sends location to AI and updates the transcript
+  const sendLocation = () => {
+    if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) {
+      alert("Cannot send location: Not connected to the call.")
+      return
+    }
+    if (!navigator.geolocation) {
+      alert("Geolocation is not supported by your browser.")
       return
     }
 
+    navigator.geolocation.getCurrentPosition(
+      (position) => {
+        const lat = position.coords.latitude
+        const long = position.coords.longitude
+        const locationString = `${lat.toFixed(4)}, ${long.toFixed(4)}`
+        const locationMessageForAI = `My current location is latitude: ${lat}, longitude: ${long}. Please acknowledge.`
+
+        // 1. Update local UI state for the agent's view
+        setUserLocation(locationString)
+
+        // 2. Create the WebSocket message for the AI
+        const messageToSend = {
+          mime_type: "text/plain",
+          data: locationMessageForAI,
+        }
+        wsRef.current?.send(JSON.stringify(messageToSend))
+
+        // 3. Append a message to the local transcript for the agent's record
+        const transcriptMessage: TranscriptMessage = {
+          id: Date.now().toString(),
+          content: `📍 Location sent: ${locationString}`,
+          sender: "user", // The "user" is the agent in this context
+          timestamp: new Date(),
+        }
+        setTranscript((prev) => [...prev, transcriptMessage])
+      },
+      (error) => {
+        console.error("Error getting location:", error)
+        alert("Unable to retrieve your location.")
+        setUserLocation("Failed to get location")
+      },
+    )
+  }
+
+  const createReport = () => {
+    if (!newReport.serviceType || !newReport.description) return
     const report: ServiceReport = {
       id: Math.random().toString(36).substring(7),
       callId: currentCall?.id || "standalone",
       ...newReport,
       status: "pending",
-      createdAt: new Date()
+      createdAt: new Date(),
     }
-
-    setReports(prev => [report, ...prev])
-    setNewReport({
-      serviceType: "",
-      priority: "medium",
-      description: "",
-      assignedTo: ""
-    })
+    setReports((prev) => [report, ...prev])
+    setNewReport({ serviceType: "", priority: "medium", description: "", assignedTo: "" })
   }
 
-  // Emergency numbers
   const emergencyNumbers = [
     { label: "Emergency Services", number: "911", type: "emergency" as const },
-    { label: "Medical Emergency", number: "112", type: "emergency" as const },
-    { label: "Fire Department", number: "101", type: "emergency" as const },
     { label: "Police", number: "100", type: "emergency" as const },
   ]
 
+  // == RENDER ==
   return (
     <>
       <Navbar />
       <div className="min-h-screen bg-background">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
           <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
-            
-            {/* Main Call Interface */}
-            <div className="lg:col-span-2">
-              <Card className="h-[600px] shadow-lg">
+            {/* Main Call Interface & Transcript */}
+            <div className="lg:col-span-2 space-y-8">
+              <Card className="shadow-lg">
                 <CardHeader className="border-b bg-gradient-to-r from-primary/5 to-accent/5">
                   <div className="flex items-center justify-between">
                     <div className="flex items-center space-x-3">
@@ -376,14 +515,20 @@ export default function LiveCallSystem() {
                         <Phone className="h-6 w-6 text-primary" />
                       </div>
                       <div>
-                        <CardTitle className="font-serif text-xl">Live Call System</CardTitle>
+                        <CardTitle className="font-serif text-xl">Live Call Agent</CardTitle>
                         <div className="flex items-center space-x-3 mt-1">
                           <div className="flex items-center space-x-2">
-                            <div className={`w-2 h-2 rounded-full ${
-                              callStatus === "active" ? "bg-green-500 animate-pulse" : 
-                              callStatus === "connecting" ? "bg-yellow-500 animate-pulse" :
-                              callStatus === "ended" ? "bg-red-500" : "bg-gray-400"
-                            }`} />
+                            <div
+                              className={`w-2 h-2 rounded-full ${
+                                callStatus === "active"
+                                  ? "bg-green-500 animate-pulse"
+                                  : callStatus === "connecting"
+                                    ? "bg-yellow-500 animate-pulse"
+                                    : callStatus === "ended" || callStatus === "failed"
+                                      ? "bg-red-500"
+                                      : "bg-gray-400"
+                              }`}
+                            />
                             <span className="text-sm text-muted-foreground font-medium capitalize">
                               {callStatus === "idle" ? "Ready" : callStatus}
                             </span>
@@ -391,9 +536,7 @@ export default function LiveCallSystem() {
                           {isCallActive && (
                             <div className="flex items-center space-x-2">
                               <Clock className="h-4 w-4 text-accent" />
-                              <span className="text-sm text-accent font-medium">
-                                {formatDuration(callDuration)}
-                              </span>
+                              <span className="text-sm text-accent font-medium">{formatDuration(callDuration)}</span>
                             </div>
                           )}
                         </div>
@@ -401,81 +544,44 @@ export default function LiveCallSystem() {
                     </div>
                   </div>
                 </CardHeader>
-
-                <CardContent className="p-6 flex flex-col h-full">
-                  {/* Call Status Display */}
-                  <div className="flex-1 flex items-center justify-center">
+                <CardContent className="p-6">
+                  <div className="flex items-center justify-center min-h-[150px]">
+                    {/* Call Status Display */}
                     {callStatus === "idle" && (
-                      <div className="text-center space-y-6">
-                        <div className="w-32 h-32 mx-auto rounded-full bg-primary/10 flex items-center justify-center">
-                          <Phone className="h-16 w-16 text-primary" />
-                        </div>
-                        <div>
-                          <h3 className="text-xl font-semibold mb-2">Ready to Connect</h3>
-                          <p className="text-muted-foreground">Enter a phone number to start a call</p>
-                        </div>
+                      <div className="text-center">
+                        <h3 className="text-xl font-semibold">Ready to Connect</h3>
+                        <p className="text-muted-foreground">Enter a phone number to start a call</p>
                       </div>
                     )}
-
                     {callStatus === "connecting" && (
-                      <div className="text-center space-y-6">
-                        <div className="w-32 h-32 mx-auto rounded-full bg-yellow-500/10 flex items-center justify-center animate-pulse">
-                          <PhoneCall className="h-16 w-16 text-yellow-600" />
+                        <div className="text-center space-y-2">
+                            <Loader2 className="h-12 w-12 text-primary animate-spin mx-auto"/>
+                            <h3 className="text-xl font-semibold">Connecting...</h3>
+                            <p className="text-muted-foreground">Dialing {phoneNumber}</p>
                         </div>
-                        <div>
-                          <h3 className="text-xl font-semibold mb-2">Connecting...</h3>
-                          <p className="text-muted-foreground">Dialing {phoneNumber}</p>
-                        </div>
-                      </div>
                     )}
-
                     {callStatus === "active" && currentCall && (
-                      <div className="text-center space-y-6">
-                        <div className="w-32 h-32 mx-auto rounded-full bg-green-500/10 flex items-center justify-center">
-                          <Activity className="h-16 w-16 text-green-600" />
+                        <div className="text-center">
+                            <h3 className="text-xl font-semibold">Call Active with AI</h3>
+                            <p className="text-muted-foreground mb-2">{currentCall.phoneNumber}</p>
+                            <Badge variant="outline" className="bg-green-50 text-green-700 border-green-200">
+                                {currentCall.callType.toUpperCase()}
+                            </Badge>
                         </div>
-                        <div>
-                          <h3 className="text-xl font-semibold mb-2">Call Active</h3>
-                          <p className="text-muted-foreground mb-2">{currentCall.phoneNumber}</p>
-                          <Badge variant="outline" className="bg-green-50 text-green-700 border-green-200">
-                            {currentCall.callType.toUpperCase()}
-                          </Badge>
-                          <div className="mt-4 text-2xl font-mono font-bold text-primary">
-                            {formatDuration(callDuration)}
-                          </div>
-                        </div>
-                        
-                        {/* Audio Level Indicator */}
-                        <div className="flex justify-center space-x-2">
-                          {[...Array(5)].map((_, i) => (
-                            <div
-                              key={i}
-                              className={`w-2 h-8 rounded-full transition-all duration-200 ${
-                                i < audioLevel ? 'bg-green-500' : 'bg-gray-300'
-                              }`}
-                              style={{
-                                height: `${20 + (i * 8)}px`,
-                                animationDelay: `${i * 100}ms`
-                              }}
-                            />
-                          ))}
-                        </div>
-                      </div>
                     )}
-
                     {callStatus === "ended" && (
-                      <div className="text-center space-y-6">
-                        <div className="w-32 h-32 mx-auto rounded-full bg-red-500/10 flex items-center justify-center">
-                          <PhoneOff className="h-16 w-16 text-red-600" />
+                        <div className="text-center">
+                            <h3 className="text-xl font-semibold">Call Ended</h3>
+                            <p className="text-muted-foreground">Duration: {formatDuration(callDuration)}</p>
                         </div>
-                        <div>
-                          <h3 className="text-xl font-semibold mb-2">Call Ended</h3>
-                          <p className="text-muted-foreground">Duration: {formatDuration(callDuration)}</p>
+                    )}
+                    {callStatus === "failed" && (
+                        <div className="text-center">
+                            <h3 className="text-xl font-semibold text-destructive">Call Failed</h3>
+                            <p className="text-muted-foreground">Connection was lost.</p>
                         </div>
-                      </div>
                     )}
                   </div>
-
                   {/* Call Controls */}
                   <div className="border-t pt-6">
                     {!isCallActive ? (
@@ -498,7 +604,6 @@ export default function LiveCallSystem() {
                             </SelectContent>
                           </Select>
                         </div>
-                        
                         <div className="flex justify-center">
                           <Button
                             onClick={startCall}
@@ -510,283 +615,139 @@ export default function LiveCallSystem() {
                             Start Call
                           </Button>
                         </div>
-
-                        {/* Emergency Quick Dial */}
                         <div className="grid grid-cols-2 gap-2 mt-4">
-                          {emergencyNumbers.map((emergency, index) => (
-                            <Button
-                              key={index}
-                              variant="outline"
-                              size="sm"
-                              onClick={() => {
-                                setPhoneNumber(emergency.number)
-                                setCallType(emergency.type)
-                              }}
-                              className="text-red-600 border-red-200 hover:bg-red-50"
-                            >
-                              <AlertTriangle className="h-4 w-4 mr-2" />
-                              {emergency.label}
+                          {emergencyNumbers.map((em, i) => (
+                            <Button key={i} variant="outline" size="sm" onClick={() => { setPhoneNumber(em.number); setCallType(em.type); }} className="text-red-600 border-red-200 hover:bg-red-50">
+                              <AlertTriangle className="h-4 w-4 mr-2" /> {em.label}
                             </Button>
                           ))}
                         </div>
                       </div>
                     ) : (
                       <div className="flex justify-center space-x-4">
-                        <Button
-                          onClick={toggleMute}
-                          variant="outline"
-                          size="lg"
-                          className={isMuted ? "bg-red-50 border-red-200" : ""}
-                        >
+                        <Button onClick={toggleMute} variant="outline" size="lg" className={isMuted ? "bg-red-50 border-red-200" : ""}>
                           {isMuted ? <MicOff className="h-5 w-5" /> : <Mic className="h-5 w-5" />}
                         </Button>
-                        
-                        <Button
-                          onClick={endCall}
-                          variant="destructive"
-                          size="lg"
-                          className="px-8"
-                        >
-                          <PhoneOff className="h-5 w-5 mr-2" />
-                          End Call
+                        <Button onClick={() => endCall(false)} variant="destructive" size="lg" className="px-8">
+                          <PhoneOff className="h-5 w-5 mr-2" /> End Call
                         </Button>
                       </div>
                     )}
                   </div>
                 </CardContent>
               </Card>
-            </div>
 
-            {/* Right Sidebar */}
-            <div className="space-y-6">
-              
-              {/* User Details - Populated during call via SDK */}
-              <Card className="shadow-md">
-                <CardHeader className="pb-4">
-                  <div className="flex items-center justify-between">
-                    <CardTitle className="font-serif text-lg flex items-center">
-                      <UserCheck className="h-5 w-5 mr-2 text-primary" />
-                      User Details
-                    </CardTitle>
-                    {isCallActive && (
-                      <Badge variant="outline" className="bg-green-50 text-green-600 border-green-200">
-                        <Activity className="h-3 w-3 mr-1 animate-pulse" />
-                        Live Feed
-                      </Badge>
-                    )}
-                  </div>
-                  {userDetails.lastUpdated && (
-                    <p className="text-xs text-muted-foreground">
-                      Last updated: {userDetails.lastUpdated.toLocaleTimeString()}
-                    </p>
-                  )}
+              {/* Live Transcript */}
+              <Card className="shadow-lg">
+                <CardHeader>
+                  <CardTitle className="font-serif text-lg flex items-center">
+                    <Activity className="h-5 w-5 mr-2 text-primary" /> Live Transcript
+                  </CardTitle>
                 </CardHeader>
                 <CardContent>
-                  <ScrollArea className="h-80">
-                    <div className="space-y-3">
-                      {/* Basic Information */}
-                      <div className="grid grid-cols-1 gap-2">
-                        <div className="flex items-center space-x-2">
-                          <User className="h-4 w-4 text-muted-foreground" />
-                          <div className="flex-1">
-                            <p className="text-xs text-muted-foreground">Name</p>
-                            <p className="text-sm font-medium">
-                              {userDetails.name || "Waiting..."}
-                            </p>
+                  <ScrollArea className="h-80 w-full p-4 border rounded-lg bg-muted/20" ref={transcriptScrollAreaRef}>
+                    {transcript.length === 0 && !isCallActive && <p className="text-center text-muted-foreground">Transcript will appear here...</p>}
+                    <div className="space-y-4">
+                      {transcript.map((message) => (
+                        <div key={message.id} className={`flex items-start gap-3 max-w-[85%] ${message.sender === "user" ? "ml-auto flex-row-reverse" : ""}`}>
+                          <div className={`p-2 rounded-full ${message.sender === "user" ? "bg-primary/10" : "bg-muted"}`}>
+                            {message.sender === "user" ? <User className="h-4 w-4 text-primary" /> : <Bot className="h-4 w-4 text-muted-foreground" />}
+                          </div>
+                          <div className={`p-3 rounded-lg ${message.sender === "user" ? "bg-primary text-primary-foreground" : "bg-background border"}`}>
+                            <p className="text-sm whitespace-pre-wrap">{message.content}</p>
+                            <p className="text-xs opacity-70 mt-1 text-right">{message.timestamp.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</p>
                           </div>
                         </div>
-                        
-                        <div className="flex items-center space-x-2">
-                          <Calendar className="h-4 w-4 text-muted-foreground" />
-                          <div className="flex-1">
-                            <p className="text-xs text-muted-foreground">Age</p>
-                            <p className="text-sm font-medium">
-                              {userDetails.age || "Waiting..."}
-                            </p>
+                      ))}
+                      {isAiThinking && (
+                        <div className="flex items-start gap-3">
+                          <div className="p-2 rounded-full bg-muted"><Bot className="h-4 w-4 text-muted-foreground" /></div>
+                          <div className="p-3 rounded-lg bg-background border flex items-center space-x-2">
+                              <div className="w-2 h-2 bg-primary/60 rounded-full animate-bounce" />
+                              <div className="w-2 h-2 bg-primary/60 rounded-full animate-bounce" style={{ animationDelay: "0.1s" }}/>
+                              <div className="w-2 h-2 bg-primary/60 rounded-full animate-bounce" style={{ animationDelay: "0.2s" }}/>
                           </div>
-                        </div>
-                        
-                        <div className="flex items-center space-x-2">
-                          <Phone className="h-4 w-4 text-muted-foreground" />
-                          <div className="flex-1">
-                            <p className="text-xs text-muted-foreground">Phone</p>
-                            <p className="text-sm font-medium">
-                              {userDetails.phoneNumber || phoneNumber || "Waiting..."}
-                            </p>
-                          </div>
-                        </div>
-                        
-                        <div className="flex items-center space-x-2">
-                          <Mail className="h-4 w-4 text-muted-foreground" />
-                          <div className="flex-1">
-                            <p className="text-xs text-muted-foreground">Email</p>
-                            <p className="text-sm font-medium">
-                              {userDetails.email || "Waiting..."}
-                            </p>
-                          </div>
-                        </div>
-                        
-                        <div className="flex items-center space-x-2">
-                          <Home className="h-4 w-4 text-muted-foreground" />
-                          <div className="flex-1">
-                            <p className="text-xs text-muted-foreground">Address</p>
-                            <p className="text-sm font-medium">
-                              {userDetails.address || "Waiting..."}
-                            </p>
-                          </div>
-                        </div>
-                      </div>
-                      
-                      <div className="border-t pt-3">
-                        <h4 className="text-sm font-semibold mb-2 flex items-center">
-                          <Heart className="h-4 w-4 mr-1 text-red-500" />
-                          Medical Information
-                        </h4>
-                        
-                        <div className="space-y-2">
-                          {/* <div>
-                            <p className="text-xs text-muted-foreground">Blood Type</p>
-                            <p className="text-sm font-medium">
-                              {userDetails.bloodType || "Waiting..."}
-                            </p>
-                          </div> */}
-                          
-                          <div>
-                            <p className="text-xs text-muted-foreground">Medical Conditions</p>
-                            <p className="text-sm">
-                              {userDetails.medicalConditions || "Waiting..."}
-                            </p>
-                          </div>
-                          
-                          {/* <div>
-                            <p className="text-xs text-muted-foreground">Allergies</p>
-                            <p className="text-sm">
-                              {userDetails.allergies || "Waiting..."}
-                            </p>
-                          </div>
-                           */}
-                          <div>
-                            <p className="text-xs text-muted-foreground">Current Medications</p>
-                            <p className="text-sm">
-                              {userDetails.medications || "Waiting..."}
-                            </p>
-                          </div>
-                        </div>
-                      </div>
-                      
-                      <div className="border-t pt-3">
-                        <h4 className="text-sm font-semibold mb-2 flex items-center">
-                          <Shield className="h-4 w-4 mr-1 text-blue-500" />
-                          Emergency Contact
-                        </h4>
-                        
-                        <div className="space-y-2">
-                          <div>
-                            <p className="text-xs text-muted-foreground">Emergency Contact</p>
-                            <p className="text-sm">
-                              {userDetails.emergencyContact || "Waiting..."}
-                            </p>
-                          </div>
-                          
-                          <div>
-                            <p className="text-xs text-muted-foreground">Insurance Number</p>
-                            <p className="text-sm">
-                              {userDetails.insuranceNumber || "Waiting..."}
-                            </p>
-                          </div>
-                        </div>
-                      </div>
-                      
-                      {userDetails.additionalNotes && (
-                        <div className="border-t pt-3">
-                          <h4 className="text-sm font-semibold mb-2">Additional Notes</h4>
-                          <p className="text-sm text-muted-foreground">
-                            {userDetails.additionalNotes}
-                          </p>
                         </div>
                       )}
                     </div>
                   </ScrollArea>
                 </CardContent>
               </Card>
+            </div>
 
-              {/* Service Report */}
+            {/* Right Sidebar */}
+            <div className="space-y-6">
               <Card className="shadow-md">
                 <CardHeader className="pb-4">
-                  <CardTitle className="font-serif text-lg flex items-center">
-                    <FileText className="h-5 w-5 mr-2 text-primary" />
-                    Service Report
-                  </CardTitle>
+                  <div className="flex items-center justify-between">
+                    <CardTitle className="font-serif text-lg flex items-center">
+                      <UserCheck className="h-5 w-5 mr-2 text-primary" /> User Details
+                    </CardTitle>
+                    {isCallActive && userDetails.lastUpdated && <Badge variant="outline" className="bg-green-50 text-green-600 border-green-200">Live Feed</Badge>}
+                  </div>
+                  {userDetails.lastUpdated && <p className="text-xs text-muted-foreground">Last updated: {userDetails.lastUpdated.toLocaleTimeString()}</p>}
                 </CardHeader>
-                <CardContent className="space-y-4">
-                  <div>
-                    <Input
-                      placeholder="Service Type"
-                      value={newReport.serviceType}
-                      onChange={(e) => setNewReport(prev => ({...prev, serviceType: e.target.value}))}
-                    />
-                  </div>
-                  
-                  <div>
-                    <Select 
-                      value={newReport.priority} 
-                      onValueChange={(value: any) => setNewReport(prev => ({...prev, priority: value}))}
-                    >
-                      <SelectTrigger>
-                        <SelectValue placeholder="Priority" />
-                      </SelectTrigger>
-                      <SelectContent>
-                        <SelectItem value="low">Low</SelectItem>
-                        <SelectItem value="medium">Medium</SelectItem>
-                        <SelectItem value="high">High</SelectItem>
-                        <SelectItem value="critical">Critical</SelectItem>
-                      </SelectContent>
-                    </Select>
-                  </div>
-
-                  <div>
-                    <Textarea
-                      placeholder="Description"
-                      value={newReport.description}
-                      onChange={(e) => setNewReport(prev => ({...prev, description: e.target.value}))}
-                      rows={3}
-                    />
-                  </div>
-
-                  <div>
-                    <Input
-                      placeholder="Assigned To"
-                      value={newReport.assignedTo}
-                      onChange={(e) => setNewReport(prev => ({...prev, assignedTo: e.target.value}))}
-                    />
-                  </div>
-
-                  <Button onClick={createReport} className="w-full">
-                    Create Report
-                  </Button>
+                <CardContent>
+                  <ScrollArea className="h-80">
+                    <div className="space-y-3">
+                      <div className="flex items-center space-x-2">
+                          <User className="h-4 w-4 text-muted-foreground" /><p className="text-sm font-medium">{userDetails.name || "Waiting..."}</p>
+                      </div>
+                       <div className="flex items-center space-x-2">
+                          <Calendar className="h-4 w-4 text-muted-foreground" /><p className="text-sm font-medium">{userDetails.age || "Waiting..."}</p>
+                      </div>
+                      <div className="flex items-center space-x-2">
+                          <Phone className="h-4 w-4 text-muted-foreground" /><p className="text-sm font-medium">{userDetails.phoneNumber || "Waiting..."}</p>
+                      </div>
+                      <div className="border-t pt-3 mt-3">
+                        <h4 className="text-sm font-semibold mb-2 flex items-center"><Heart className="h-4 w-4 mr-1 text-red-500" />Medical Info</h4>
+                        <p className="text-xs text-muted-foreground">Conditions: {userDetails.medicalConditions || "Waiting..."}</p>
+                        <p className="text-xs text-muted-foreground">Medications: {userDetails.medications || "Waiting..."}</p>
+                      </div>
+                       <div className="border-t pt-3 mt-3">
+                        <h4 className="text-sm font-semibold mb-2 flex items-center"><Shield className="h-4 w-4 mr-1 text-blue-500" />Emergency</h4>
+                        <p className="text-xs text-muted-foreground">Contact: {userDetails.emergencyContact || "Waiting..."}</p>
+                      </div>
+                    </div>
+                  </ScrollArea>
                 </CardContent>
               </Card>
 
-              {/* Location Services */}
+              {/* <Card className="shadow-md">
+                <CardHeader className="pb-4"><CardTitle className="font-serif text-lg flex items-center"><FileText className="h-5 w-5 mr-2 text-primary" /> Service Report</CardTitle></CardHeader>
+                <CardContent className="space-y-4">
+                  <Input placeholder="Service Type" value={newReport.serviceType} onChange={(e) => setNewReport(prev => ({...prev, serviceType: e.target.value}))}/>
+                  <Select value={newReport.priority} onValueChange={(value: any) => setNewReport(prev => ({...prev, priority: value}))}>
+                    <SelectTrigger><SelectValue placeholder="Priority" /></SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="low">Low</SelectItem><SelectItem value="medium">Medium</SelectItem><SelectItem value="high">High</SelectItem><SelectItem value="critical">Critical</SelectItem>
+                    </SelectContent>
+                  </Select>
+                  <Textarea placeholder="Description" value={newReport.description} onChange={(e) => setNewReport(prev => ({...prev, description: e.target.value}))} rows={3}/>
+                  <Button onClick={createReport} className="w-full">Create Report</Button>
+                </CardContent>
+              </Card> */}
+
+              {/* MODIFIED: Location Services Card */}
               <Card className="shadow-md">
                 <CardHeader className="pb-4">
                   <CardTitle className="font-serif text-lg flex items-center">
-                    <MapPin className="h-5 w-5 mr-2 text-primary" />
-                    Location Services
+                    <MapPin className="h-5 w-5 mr-2 text-primary" /> Location Services
                   </CardTitle>
                 </CardHeader>
                 <CardContent className="space-y-3">
-                  <Button 
-                    onClick={getCurrentLocation} 
-                    variant="outline" 
+                  <Button
+                    onClick={sendLocation}
+                    variant="outline"
                     className="w-full"
+                    disabled={!isCallActive}
                   >
                     <MapPin className="h-4 w-4 mr-2" />
-                    Get Current Location
+                    Send Location to AI
                   </Button>
                   {userLocation && (
                     <div className="p-2 bg-muted rounded text-sm">
-                      <strong>Location:</strong> {userLocation}
+                      <strong>Last Sent:</strong> {userLocation}
                     </div>
                   )}
                 </CardContent>
